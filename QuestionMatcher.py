@@ -49,60 +49,61 @@ class QuestionMatcher:
 
         return similar_courses  
     
-    def find_similar_units(self, target_unit_text, course_id, unit_similarity_threshold):
+    def find_similar_units(self, target_unit_text, course_id, unit_similarity_threshold, max_questions=5):
         try:
             units_ref = self.db.collection('courses').document(course_id).collection('units')
             units = units_ref.stream()
-            
+
             similar_units = []
             for unit in units:
                 unit_data = unit.to_dict()
-                unit_text = unit_data.get('name', '') + " " + unit_data.get('description', '')
+                unit_text = unit_data.get('name') + " " + unit_data.get('description')
                 similarity_score = self.compute_similarity(target_unit_text, unit_text)
-                
-            if similarity_score >= unit_similarity_threshold and unit_data.get('questions'):
+
+                if similarity_score >= unit_similarity_threshold and unit_data.get('questions'):
                     similar_units.append((
                         unit.id,
-                        unit_data.get('name', ''), 
-                        similarity_score  
+                        unit_data.get('name'), 
+                        similarity_score,
+                        unit_data.get('questions', [])[:max_questions]
                     ))
-            
+
             similar_units.sort(key=lambda x: x[2], reverse=True)
             return similar_units
         except Exception as e:
             print(f"Error finding similar units: {e}")
             return []
-    
-    def find_similar_courses_or_units(self, course_id, unit_id=None, top_k=5, unit_similarity_threshold=0.5, course_similarity_threshold=0.5):
+
+    def find_similar_courses_or_units(self, course_id, unit_id=None, top_k=5, unit_similarity_threshold=0.5, course_similarity_threshold=0.5, max_questions=5):
         target_course = self.get_course(course_id)
-        
+
         if unit_id:
             target_unit = self.get_unit(course_id, unit_id)
-            target_unit_text = f"{target_unit.get('name', '')} {target_unit.get('description', '')}"
-            
+            target_unit_text = f"{target_unit.get('name')} {target_unit.get('description', '')}"
+
             similar_courses = self.filter_similar_courses(target_course, course_id, course_similarity_threshold)
             similarities = []
 
             for course_id, course_data, _ in similar_courses:
-                
                 if not course_data.get("numQuestions"):
                     continue
 
-                similar_units = self.find_similar_units(target_unit_text, course_id, unit_similarity_threshold)
-                
+                similar_units = self.find_similar_units(target_unit_text, course_id, unit_similarity_threshold, max_questions)
+
                 if similar_units:
                     most_similar_unit = similar_units[0]
                     similarities.append((
                         course_id,
                         course_data['name'],
-                        most_similar_unit[0],  
-                        most_similar_unit[1], 
-                        most_similar_unit[2],  
+                        most_similar_unit[0],  # Unit ID
+                        most_similar_unit[1],  # Unit Name
+                        most_similar_unit[2],  # Similarity Score
+                        most_similar_unit[3]   # Questions
                     ))
 
             similarities.sort(key=lambda x: x[4], reverse=True)
             return similarities[:top_k]
-        
+
         else:
             similar_courses = self.filter_similar_courses(target_course, course_id, course_similarity_threshold)
             return [
@@ -120,24 +121,26 @@ def find_similar_courses():
         unit_id = data.get('unit_id')
         top_k = data.get('top_k', 5)
         unit_similarity_threshold = data.get('unit_similarity_threshold', 0.5)
-        course_similarity_threshold = data.get('course_similarity_threshold', 0.5) 
+        course_similarity_threshold = data.get('course_similarity_threshold', 0.5)
+        max_questions = data.get('max_questions', 5)
 
         if not course_id:
             return jsonify({"error": "course_id is required"}), 400
-        
+
         similar_courses = similarity_calculator.find_similar_courses_or_units(
             course_id=course_id,
             top_k=top_k,
             unit_id=unit_id,
             unit_similarity_threshold=unit_similarity_threshold,
-            course_similarity_threshold=course_similarity_threshold
+            course_similarity_threshold=course_similarity_threshold,
+            max_questions=max_questions
         )
 
         result = [
             {
                 "course_id": item[0], 
-                "course_name": item[1],
-                "unit_id": item[2] if len(item) > 2 else None
+                "unit_id": item[2] if len(item) > 2 else None,
+                "questions": item[5] if len(item) > 5 else []
             }
             for item in similar_courses
         ]
@@ -146,4 +149,3 @@ def find_similar_courses():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
