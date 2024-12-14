@@ -60,7 +60,7 @@ class QuestionMatcher:
                 unit_text = unit_data.get('name', '') + " " + unit_data.get('description', '')
                 similarity_score = self.compute_similarity(target_unit_text, unit_text)
                 
-                if similarity_score >= unit_similarity_threshold:
+            if similarity_score >= unit_similarity_threshold and unit_data.get('questions'):
                     similar_units.append((
                         unit.id,
                         unit_data.get('name', ''), 
@@ -72,7 +72,7 @@ class QuestionMatcher:
         except Exception as e:
             print(f"Error finding similar units: {e}")
             return []
-
+    
     def find_similar_courses_or_units(self, course_id, unit_id=None, top_k=5, unit_similarity_threshold=0.5, course_similarity_threshold=0.5):
         target_course = self.get_course(course_id)
         
@@ -84,6 +84,10 @@ class QuestionMatcher:
             similarities = []
 
             for course_id, course_data, _ in similar_courses:
+                
+                if not course_data.get("numQuestions"):
+                    continue
+
                 similar_units = self.find_similar_units(target_unit_text, course_id, unit_similarity_threshold)
                 
                 if similar_units:
@@ -102,8 +106,8 @@ class QuestionMatcher:
         else:
             similar_courses = self.filter_similar_courses(target_course, course_id, course_similarity_threshold)
             return [
-                (course_id, course_data['name'], None) 
-                for course_id, course_data, _ in similar_courses[:top_k]
+                (course_id, course_data['name']) 
+                for course_id, course_data, _ in similar_courses[:top_k] 
             ]
 
 similarity_calculator = QuestionMatcher(firebase_cred_path="studybits_firebase.json")
