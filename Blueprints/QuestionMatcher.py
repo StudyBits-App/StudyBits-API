@@ -1,18 +1,21 @@
 from flask import Blueprint, request, jsonify
-from sentence_transformers import SentenceTransformer
 from firebase_admin import credentials, firestore
-import firebase_admin
 from dotenv import load_dotenv
+from transformers import AutoTokenizer, AutoModel
+import torch
+import firebase_admin
 import os
 import json
+
 
 question_match = Blueprint('question_match', __name__,)
 load_dotenv()
 
 class QuestionMatcher:
-    def __init__(self, model_name="all-MiniLM-L6-v2"):
-        self.model = SentenceTransformer(model_name)
+    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
         firebase_cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
         if firebase_cred_json:
             firebase_cred_dict = json.loads(firebase_cred_json)
             self._initialize_firebase(firebase_cred_dict)
@@ -23,10 +26,15 @@ class QuestionMatcher:
         self.db = firestore.client()
    
     def compute_similarity(self, string1, string2):
-        embedding1 = self.model.encode([string1])[0]
-        embedding2 = self.model.encode([string2])[0]
-        similarity_score = self.model.similarity(embedding1, embedding2)
-        return similarity_score
+        inputs1 = self.tokenizer(string1, return_tensors="pt", truncation=True, padding=True)
+        inputs2 = self.tokenizer(string2, return_tensors="pt", truncation=True, padding=True)
+        
+        with torch.no_grad():
+            embedding1 = self.model(**inputs1).last_hidden_state.mean(dim=1)
+            embedding2 = self.model(**inputs2).last_hidden_state.mean(dim=1)
+        
+        similarity_score = torch.nn.functional.cosine_similarity(embedding1, embedding2)
+        return similarity_score.item()
 
     def get_course(self, course_id):
         course_ref = self.db.collection('courses').document(course_id)
