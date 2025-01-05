@@ -1,3 +1,4 @@
 studybits_firebase.json
 
-/__pycache__
+/Blueprints/__pycache__
+.env
