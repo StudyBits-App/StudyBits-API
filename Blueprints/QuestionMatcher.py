@@ -1,21 +1,17 @@
 from flask import Blueprint, request, jsonify
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
-from transformers import AutoTokenizer, AutoModel
-import torch
+from utils.similarity_calculator import Similarity
 import firebase_admin
 import os
 import json
-
 
 question_match = Blueprint('question_match', __name__,)
 load_dotenv()
 
 class QuestionMatcher:
-    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self):
         firebase_cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
         if firebase_cred_json:
             firebase_cred_dict = json.loads(firebase_cred_json)
             self._initialize_firebase(firebase_cred_dict)
@@ -24,17 +20,9 @@ class QuestionMatcher:
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
         self.db = firestore.client()
-   
-    def compute_similarity(self, string1, string2):
-        inputs1 = self.tokenizer(string1, return_tensors="pt", truncation=True, padding=True)
-        inputs2 = self.tokenizer(string2, return_tensors="pt", truncation=True, padding=True)
-        
-        with torch.no_grad():
-            embedding1 = self.model(**inputs1).last_hidden_state.mean(dim=1)
-            embedding2 = self.model(**inputs2).last_hidden_state.mean(dim=1)
-        
-        similarity_score = torch.nn.functional.cosine_similarity(embedding1, embedding2)
-        return similarity_score.item()
+    
+    def compute_similarity(self, string1: str, string2: str) -> float:
+        return Similarity().compute_similarity(string1, string2)
 
     def get_course(self, course_id):
         course_ref = self.db.collection('courses').document(course_id)
@@ -164,4 +152,3 @@ def find_similar_courses():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
