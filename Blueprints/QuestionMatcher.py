@@ -1,10 +1,10 @@
 from flask import Blueprint, request, jsonify
 from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
-from utils.similarity_calculator import Similarity
 import firebase_admin
 import os
 import json
+from utils.similarity_calculator import Similarity
 
 question_match = Blueprint('question_match', __name__,)
 load_dotenv()
@@ -152,3 +152,7 @@ def find_similar_courses():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@question_match.route("/")
+def index():
+    return "StudyBits API"
