@@ -1,158 +1,242 @@
 from flask import Blueprint, request, jsonify
-from firebase_admin import credentials, firestore
-from dotenv import load_dotenv
-import firebase_admin
-import os
-import json
-from utils.similarity_calculator import Similarity
+from typing import List, Dict, Set, Optional
+from pyparsing import Iterable
+from firebase.firebase import db
+import random
+import re
 
-question_match = Blueprint('question_match', __name__,)
-load_dotenv()
+question_match = Blueprint("question_match", __name__)
+STOPWORDS = {"the", "and", "or", "of", "a", "an", "in", "on", "to", "for", "by", "with", "at", "from", "as", "is"}
 
 class QuestionMatcher:
-    def __init__(self):
-        firebase_cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
-        if firebase_cred_json:
-            firebase_cred_dict = json.loads(firebase_cred_json)
-            self._initialize_firebase(firebase_cred_dict)
-
-    def _initialize_firebase(self, cred_dict):
-        cred = credentials.Certificate(cred_dict)
-        firebase_admin.initialize_app(cred)
-        self.db = firestore.client()
+    def get_user_learning_state(uid: str, course: str) -> Optional[dict]:
+        doc = db.collection("learning").document(uid).collection("courses").document(course).get()
+        return doc.to_dict() if doc.exists else None
     
-    def compute_similarity(self, string1: str, string2: str) -> float:
-        return Similarity().compute_similarity(string1, string2)
+    def split_tags(tags: Iterable[str]) -> Set[str]:
+        words = set()
+        for tag in tags:
+            tag = tag.lower()
+            # Replace hyphens and slashes with spaces, remove punctuation
+            tag = re.sub(r"[-/]", " ", tag)
+            tag = re.sub(r"[^\w\s]", "", tag)
 
-    def get_course(self, course_id):
-        course_ref = self.db.collection('courses').document(course_id)
-        course = course_ref.get().to_dict()
-        if not course:
-            raise Exception(f"Course with ID {course_id} not found.")
-        return course
-
-    def get_unit(self, course_id, unit_id):
-        unit= self.db.collection('courses').document(course_id).collection('units').document(unit_id).get().to_dict()
-        if not unit:
-            raise Exception(f"Unit with ID {unit_id} not found in Course {course_id}.")
-        return unit
-    
-    def filter_similar_courses(self, target_course, course_similarity_threshold):
-        courses = self.db.collection('courses').stream()
-        similar_courses = []
-        for course in courses:
-            course_data = course.to_dict()     
-            course_similarity_score = self.compute_similarity(target_course.get('name'), course_data.get('name'))
-            if course_similarity_score >= course_similarity_threshold:
-                similar_courses.append((course.id, course_data, course_similarity_score))
-
-        return similar_courses  
-    
-    def find_similar_units(self, target_unit_text, course_id, unit_similarity_threshold):
-        try:
-            units = self.db.collection('courses').document(course_id).collection('units').stream()
-
-            similar_units = []
-            for unit in units:
-                unit_data = unit.to_dict()
-                unit_text = unit_data.get('name') + " " + unit_data.get('description')
-                similarity_score = self.compute_similarity(target_unit_text, unit_text)
-
-                if similarity_score >= unit_similarity_threshold and unit_data.get('questions'):
-                    similar_units.append((
-                        unit.id,
-                        unit_data.get('name'), 
-                        similarity_score,
-                        unit_data.get('questions', [])
-                    ))
-
-            similar_units.sort(key=lambda x: x[2], reverse=True)
-            return similar_units
-        except Exception as e:
-            print(f"Error finding similar units: {e}")
-            return []
-
-    def find_courses_units_questions(self, course_id, top_k, unit_id=None, unit_similarity_threshold=0.5, course_similarity_threshold=0.5):
-        
-        target_course = self.get_course(course_id) 
-        similar_courses = self.filter_similar_courses(target_course, course_similarity_threshold)
-        similar_course_data = []
-        if unit_id:
-            target_unit = self.get_unit(course_id, unit_id)
-            target_unit_text = f"{target_unit.get('name')} {target_unit.get('description', '')}"
-
-            for similar_course_id, course_data, _ in similar_courses:
-                if not course_data.get("numQuestions") or course_data.get("numQuestions") < 1:
+            # Split into words and remove stopwords
+            for word in tag.split():
+                if word in STOPWORDS or not word.strip():
                     continue
-                
-                similar_units = self.find_similar_units(target_unit_text, similar_course_id, unit_similarity_threshold)
+                # Simple lemmatization: convert plurals ending in 's' to singular
+                if word.endswith("s") and len(word) > 3:
+                    word = word[:-1]
+                words.add(word)
+        return words
 
-                for unit in similar_units:
-                    similar_course_data.append({
-                        "course_id": similar_course_id,
-                        "course_name": course_data["name"],
-                        "unit_id": unit[0],
-                        "unit_name": unit[1],
-                        "questions": unit[3]
-                    })
-        else:
-            for similar_course_id, course_data, _ in similar_courses[:top_k]:
-                units_ref = self.db.collection("courses").document(similar_course_id).collection("units")
-                units = units_ref.stream()
-                if not course_data.get("numQuestions") or course_data.get("numQuestions") < 1:
-                    continue
-                for unit in units:
+    def get_question_tags(self, question_ids: List[str]) -> Set[str]:
+        tags = set()
+        for qid in question_ids:
+            doc = db.collection("questions").document(qid).get()
+            if doc.exists:
+                raw_tags = doc.to_dict().get("tags", [])
+                tags.update(self.split_tags(raw_tags))
+        return tags
 
-                    unit_data = unit.to_dict()
-                    similar_course_data.append({
-                        "course_id": similar_course_id,
-                        "course_name": course_data["name"],
-                        "unit_id": unit.id,
-                        "unit_name": unit_data.get("name"),
-                        "questions": unit_data.get("questions", [])
-                    })
+    def get_course_tags(self, course_id: str) -> Set[str]:
+        doc = db.collection("course").document(course_id).get()
+        if doc.exists:
+            raw_tags = doc.to_dict().get("tags", [])
+            return self.split_tags(raw_tags)
+        return set()
 
-        return similar_course_data
+    def get_unit_tags(self, course_id: str, unit_id: Optional[str]) -> Set[str]:
+        if not unit_id:
+            return set()
+        doc = (
+            db.collection("course")
+            .document(course_id)
+            .collection("units")
+            .document(unit_id)
+            .get()
+        )
+        if doc.exists:
+            raw_tags = doc.to_dict().get("tags", [])
+            return self.split_tags(raw_tags)
+        return set()
 
-similarity_calculator = QuestionMatcher()
+    def get_effective_tags(self, question: dict) -> Set[str]:
+        """
+        Combine question tags + course tags + unit tags for accurate context matching.
+        """
+        qtags = set(question.get("tags", []))
+        course_id = question.get("course")
+        unit_id = question.get("unit")
+        return qtags | self.get_course_tags(course_id) | self.get_unit_tags(course_id, unit_id)
+    
+    def find_relevant_questions(
+        self,
+        liked_tags: Set[str],
+        disliked_tags: Set[str],
+        course_tags: Set[str],
+        unit_tags: Set[str],
+        answered_questions: Set[str],
+        subscribed_courses: Set[str],
+        match_threshold: float = 0.5,
+        disliked_threshold: float = 0.4,
+    ) -> List[Dict]:
+        """
+        Finds relevant questions for a user based on:
+        - Curriculum alignment (≥ match_threshold of course+unit tags must be present in question)
+        - Dislike filtering (≤ disliked_threshold of question tags may be disliked)
+        - Penalizes answered questions but still includes them
 
-@question_match.route('/find_similar_courses', methods=['POST'])
-def find_similar_courses():
-    try:
-        data = request.json
-        course_id = data.get('course_id')
-        unit_id = data.get('unit_id')
-        top_k = data.get('top_k', 5)
-        unit_similarity_threshold = data.get('unit_similarity_threshold', 0.5)
-        course_similarity_threshold = data.get('course_similarity_threshold', 0.5)
+        Returns a flat list of matched question dicts with course/unit/question IDs and scoring info.
+        """
+        matched = []
+        curriculum_tags = course_tags | unit_tags
 
-        if not course_id:
-            return jsonify({"error": "course_id is required"}), 400
+        for doc in db.collection("questions").stream():
+            qdata = doc.to_dict()
+            qid = doc.id
 
-        similar_courses_or_units = similarity_calculator.find_courses_units_questions(
-            course_id=course_id,
-            unit_id=unit_id,
-            top_k=top_k,
-            unit_similarity_threshold=unit_similarity_threshold,
-            course_similarity_threshold=course_similarity_threshold,
+            # STEP 1: Get all tags related to question, split multi-word tags
+            effective_tags = self.get_effective_tags(qdata)
+            if not effective_tags:
+                continue
+
+            # STEP 2: Check proportion of disliked tags (excluding those allowed by curriculum)
+            disallowed_disliked_tags = effective_tags & disliked_tags - curriculum_tags
+            dislike_ratio = len(disallowed_disliked_tags) / len(effective_tags)
+            if dislike_ratio > disliked_threshold:
+                continue  # too many disallowed disliked tags
+
+            # STEP 3: Check curriculum alignment
+            num_required = len(curriculum_tags)
+            if num_required == 0:
+                continue
+
+            num_matched = len(effective_tags & curriculum_tags)
+            match_ratio = num_matched / num_required
+            if match_ratio < match_threshold:
+                continue
+
+            # STEP 4: Compute scoring
+            liked_overlap = len(effective_tags & liked_tags)
+            liked_ratio = liked_overlap / len(effective_tags)
+            liked_boost = round(liked_ratio * 2, 2)  # scale to 0–2
+
+            course_id = qdata.get("course")
+            subscribed_boost = 1 if course_id in subscribed_courses else 0
+
+            answered_penalty = -1 if qid in answered_questions else 0
+
+            priority = liked_boost + subscribed_boost + answered_penalty
+
+            matched.append({
+                "course_id": course_id,
+                "course_name": qdata.get("course_name", ""),
+                "unit_id": qdata.get("unit"),
+                "unit_name": qdata.get("unit_name", ""),
+                "question_id": qid,
+                "score": liked_overlap,
+                "priority": priority
+            })
+
+        return matched
+
+    def group_and_rank(self, matched: List[Dict], top_k: int) -> List[Dict]:
+        """
+        Groups matched questions by (course_id, unit_id), 
+        aggregates priority and score, and returns the top_k results 
+        in the format required by the API layer.
+
+        Sorting order:
+        - Higher total priority (from liked tags + subscriptions)
+        - Then higher tag match score
+        """
+        grouped = {}
+
+        for item in matched:
+            key = (item["course_id"], item["unit_id"])
+            if key not in grouped:
+                grouped[key] = {
+                    "course_id": item["course_id"],
+                    "course_name": item["course_name"],
+                    "unit_id": item["unit_id"],
+                    "unit_name": item["unit_name"],
+                    "questions": [],
+                    "priority": 0,
+                    "total_score": 0
+                }
+
+            grouped[key]["questions"].append(item["question_id"])
+            grouped[key]["priority"] += item["priority"]
+            grouped[key]["total_score"] += item["score"]
+
+        # Sort the groups
+        sorted_groups = sorted(
+            grouped.values(),
+            key=lambda g: (-g["priority"], -g["total_score"])
         )
 
+        top_results = sorted_groups[:top_k]
+        random.shuffle(top_results)
+        
+        # Format result to include only desired output fields
         result = [
             {
-                "course_id": item["course_id"],
-                "course_name": item["course_name"],
-                "unit_id": item["unit_id"],
-                "unit_name": item["unit_name"],
-                "questions": item["questions"]
+                "course_id": group["course_id"],
+                "course_name": group["course_name"],
+                "unit_id": group["unit_id"],
+                "unit_name": group["unit_name"],
+                "questions": group["questions"]
             }
-            for item in similar_courses_or_units
+            for group in sorted_groups[:top_k]
         ]
 
-        return jsonify({"similar_courses": result}), 200
+        return result
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+matcher = QuestionMatcher()
 
-@question_match.route("/")
-def index():
-    return "StudyBits API"
+
+@question_match.route("/find_similar_courses", methods=["POST"])
+def find_similar_courses():
+    data = request.json
+    uid = data.get("uid")
+    course_id = data.get("course_id")
+    unit_id = data.get("unit_id")
+    use_units = data.get("useUnits", False)
+    top_k = data.get("top_k", 5)
+
+    if not uid or not course_id:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Step 1: Load user's learning state for this course
+    user_data = matcher.get_user_learning_state(uid, course_id)
+    if not user_data:
+        return jsonify({"error": "User not found"}), 404
+
+    liked_ids = user_data.get("likedQuestions", [])
+    disliked_ids = user_data.get("dislikedQuestions", [])
+    answered_ids = set(user_data.get("answeredQuestions", []))
+    subscribed_courses = set(user_data.get("subscribedCourses", []))
+
+    # Step 2: Extract tags from questions and course/unit metadata
+    liked_tags = matcher.get_question_tags(liked_ids)
+    disliked_tags = matcher.get_question_tags(disliked_ids)
+    course_tags = matcher.get_course_tags(course_id)
+    unit_tags = matcher.get_unit_tags(course_id, unit_id) if use_units and unit_id else set()
+
+    # Step 3: Match relevant questions (curriculum match is mandatory)
+    matched = matcher.find_relevant_questions(
+        liked_tags=liked_tags,
+        disliked_tags=disliked_tags,
+        course_tags=course_tags,
+        unit_tags=unit_tags,
+        answered_questions=answered_ids,
+        subscribed_courses=subscribed_courses,
+        match_threshold=0.5,      # curriculum match ratio required
+        disliked_threshold=0.4    # tolerated disliked tag ratio
+    )
+
+    # Step 4: Group results by course/unit and return top-k
+    result = matcher.group_and_rank(matched, top_k)
+    return jsonify({"similar_courses": result}), 200

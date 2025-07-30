@@ -1,7 +1,8 @@
 studybits_firebase.json
 
 /Blueprints/__pycache__
-/utils/__pycache__
+/util/__pycache__
+/firebase/__pycache__
 
 .env
 .vercel
