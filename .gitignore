@@ -4,5 +4,7 @@ studybits_firebase.json
 /util/__pycache__
 /firebase/__pycache__
 
+/venv
 .env
 .vercel
+.vscode
