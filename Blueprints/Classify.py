@@ -32,7 +32,7 @@ class Classifier:
 
         parts.append(types.Part(text=
             "You are designed to classify questions with tags.\n"
-            "Given the following question and any associated hints (text and image), "
+            "Given the following question and any associated hints (text possibly with an image), "
             "return a comma-separated list of appropriate tags from broad to specific.\n\n"
             f"Question:\n{question['question']}\n\nHints:"
         ))
@@ -107,7 +107,7 @@ class Classifier:
     def classifyUnit(self, unit_name: str) -> List[str]:
         prompt = (
             "You are designed to classify units of study into relevant subject tags.\n"
-            "Given the unit's name and description, return a comma-separated list of lowercase tags "
+            "Given the unit's name, return a comma-separated list of lowercase tags "
             "from broad to specific.\n\n"
             f"Unit Name: {unit_name}"
         )
